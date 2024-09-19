@@ -6,8 +6,8 @@
 #include <can_common.h>
 
 //#define DEBUG_SETUP
-#define FD_RX_BUFFER_SIZE	64
-#define FD_TX_BUFFER_SIZE  32
+#define FD_RX_BUFFER_SIZE 1024
+#define FD_TX_BUFFER_SIZE 1024
 #define FD_NUM_FILTERS 32
 
 class MCP2517FD : public CAN_COMMON
@@ -76,6 +76,7 @@ class MCP2517FD : public CAN_COMMON
 	void sendCallback(CAN_FRAME *frame);
 
 	void InitFilters(bool permissive);
+	void sendHandler();
 	void intHandler();
 	void printDebug();
 	void txQueueSetup();
@@ -89,6 +90,10 @@ class MCP2517FD : public CAN_COMMON
     bool needMCPReset = false;
     bool needTXFIFOReset = false;
     bool inFDMode;
+	uint32_t rx_queue_count = 0;
+	uint32_t handle_dispatch_count = 0;
+	uint32_t int_handler_count = 0;
+	uint32_t task_MCPIntFD_count = 0;
 
   private:
 	bool _init(uint32_t baud, uint8_t freq, uint8_t sjw, bool autoBaud);

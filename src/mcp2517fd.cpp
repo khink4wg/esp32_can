@@ -9,16 +9,32 @@
 
 SPISettings fdSPISettings(FD_SPI_SPEED, MSBFIRST, SPI_MODE0);
 
+void task_MCPSendFD(void *pvParameters)
+{
+    const TickType_t iDelay = portTICK_PERIOD_MS;
+    TickType_t xLastWakeTime = xTaskGetTickCount(); // 起動時の時間を取得
+    MCP2517FD* mcpCan = (MCP2517FD*)pvParameters;
+    while (1)
+    {
+        // vTaskDelay(iDelay);
+        vTaskDelayUntil(&xLastWakeTime, iDelay); // 一定周期での呼び出しを保証
+        mcpCan->sendHandler();                    // not truly an interrupt handler anymore
+    }
+}
+
 //Modified to loop, waiting for 1ms then pretending an interrupt came in
 //basically switches to a polled system where we do not pay attention to actual interrupts
 void task_MCPIntFD( void *pvParameters )
 {
     const TickType_t iDelay = portTICK_PERIOD_MS;
+    TickType_t xLastWakeTime = xTaskGetTickCount(); // 起動時の時間を取得
     MCP2517FD* mcpCan = (MCP2517FD*)pvParameters;
     while (1)
     {
-        vTaskDelay(iDelay);
+        //vTaskDelay(iDelay);
+        vTaskDelayUntil(&xLastWakeTime, iDelay); // 一定周期での呼び出しを保証
         mcpCan->intHandler(); //not truly an interrupt handler anymore
+        mcpCan->task_MCPIntFD_count++;
     }
 }
 
@@ -225,9 +241,10 @@ void MCP2517FD::initializeResources()
 
                            //func        desc    stack, params, priority, handle to task, which core to pin to
     //Tasks take up the stack you allocate here in bytes plus 388 bytes overhead            
-    xTaskCreatePinnedToCore(&task_MCPCAN, "CAN_FD_CALLBACK", 6144, this, 8, &taskHandleMCPCAN, 0);
-    xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 4096, this, 19, &intTaskFD, 0);
-    xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 7, &taskHandleReset, 0);
+    //xTaskCreatePinnedToCore(&task_MCPCAN, "CAN_FD_CALLBACK", 6144, this, 8, &taskHandleMCPCAN, 0);
+    xTaskCreatePinnedToCore(&task_MCPSendFD, "CAN_FD_TX", 8192 , this, 10, &intTaskFD, 0);
+    xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 8192 , this, 18, &intTaskFD, 0);
+    xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 1, &taskHandleReset, 0);
     if (debuggingMode) Serial.println("Done with resource init");
 
     initializedResources = true;
@@ -756,7 +773,8 @@ bool MCP2517FD::_initFD(uint32_t nominalSpeed, uint32_t dataSpeed, uint8_t freq,
 uint16_t MCP2517FD::available()
 {
     if (!rxQueue) return 0; //why would this happen though?!
-	return uxQueueMessagesWaiting(rxQueue);
+	//return uxQueueMessagesWaiting(rxQueue);
+    return uxQueueSpacesAvailable(rxQueue);
 }
 
 int MCP2517FD::_setFilter(uint32_t id, uint32_t mask, bool extended)
@@ -1310,9 +1328,18 @@ bool MCP2517FD::GetRXFrame(CAN_FRAME &frame) {
     return false;
 }
 
+void MCP2517FD::sendHandler(void)
+{
+    if (!running)
+        return;
+    if (uxQueueMessagesWaiting(txQueue) > 0)
+        handleTXFifoISR(0); // if we have messages to send then try to queue them in the TX fifo
+}
+
 //Not truly an interrupt handler in the sense that it does NOT run in interrupt context
 //but it does handle the MCP2517FD interrupt still.
 void MCP2517FD::intHandler(void) {
+    int_handler_count++;
     CAN_FRAME_FD messageFD;
     CAN_FRAME message;
     uint32_t ctrlVal;
@@ -1332,9 +1359,9 @@ void MCP2517FD::intHandler(void) {
       //handleTXFifoISR(0);
     //}
     //else //didn't get TX interrupt but check if we've got msgs in FIFO and see if we can queue them into hardware
-    {
-      if (uxQueueMessagesWaiting(txQueue) > 0) handleTXFifoISR(0); //if we have messages to send then try to queue them in the TX fifo
-    }
+    //{
+    //  if (uxQueueMessagesWaiting(txQueue) > 0) handleTXFifoISR(0); //if we have messages to send then try to queue them in the TX fifo
+    //}
 
     if(interruptFlags & 2)  //Receive FIFO interrupt
     {
@@ -1420,7 +1447,7 @@ void MCP2517FD::intHandler(void) {
     }
 
     //Now, acknowledge the interrupts by clearing the intf bits
-    Write16(ADDR_CiINT, 0);
+    //Write16(ADDR_CiINT, 0);
 }
 
 //TX fifo is 0
@@ -1565,6 +1592,7 @@ void MCP2517FD::handleTXFifo(int fifo, CAN_FRAME &newFrame)
 */
 void MCP2517FD::handleFrameDispatch(CAN_FRAME_FD &frame, int filterHit)
 {
+    handle_dispatch_count++;
     CANListener *thisListener;
 
     //First, try to send a callback. If no callback registered then buffer the frame.
@@ -1587,18 +1615,22 @@ void MCP2517FD::handleFrameDispatch(CAN_FRAME_FD &frame, int filterHit)
             thisListener = listener[listenerPos];
             if (thisListener != NULL)
             {
-                if (thisListener->isCallbackActive(filterHit))
-                {
-                    frame.fid = 0x80000000ul + (listenerPos << 24ul) + filterHit;
-                    xQueueSend(callbackQueueMCP, &frame, 0);
-                    return;
-                }
-                else if (thisListener->isCallbackActive(numFilters)) //global catch-all
-                {
-                    frame.fid = 0x80000000ul + (listenerPos << 24ul) + 0xFF;
-                    xQueueSend(callbackQueueMCP, &frame, 0);
-                    return;
-                }
+                thisListener->gotFrameFD(&frame, filterHit);
+                xQueueSend(rxQueue, &frame, 0);
+                rx_queue_count++;
+                return;
+                //if (thisListener->isCallbackActive(filterHit))
+                //{
+                //    frame.fid = 0x80000000ul + (listenerPos << 24ul) + filterHit;
+                //    xQueueSend(callbackQueueMCP, &frame, 0);
+                //    return;
+                //}
+                //else if (thisListener->isCallbackActive(numFilters)) //global catch-all
+                //{
+                //    frame.fid = 0x80000000ul + (listenerPos << 24ul) + 0xFF;
+                //    xQueueSend(callbackQueueMCP, &frame, 0);
+                //    return;
+                //}
             }
         }
     }
