@@ -85,6 +85,7 @@ class MCP2517FD : public CAN_COMMON
 
     QueueHandle_t callbackQueueMCP;
     TaskHandle_t intTaskFD = NULL;
+	TaskHandle_t taskHandleSendFD = NULL;
     TaskHandle_t taskHandleMCPCAN = NULL;
     TaskHandle_t taskHandleReset = NULL;
     bool needMCPReset = false;

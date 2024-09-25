@@ -22,19 +22,34 @@ void task_MCPSendFD(void *pvParameters)
     }
 }
 
+// CANFDの受信タスクを割り込みピン_INTで呼び出す
+void IRAM_ATTR MCPFD_INTHandler()
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    vTaskNotifyGiveFromISR(CAN1.intTaskFD, &xHigherPriorityTaskWoken);
+    if (xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
+}
+
 //Modified to loop, waiting for 1ms then pretending an interrupt came in
 //basically switches to a polled system where we do not pay attention to actual interrupts
 void task_MCPIntFD( void *pvParameters )
 {
-    const TickType_t iDelay = portTICK_PERIOD_MS;
-    TickType_t xLastWakeTime = xTaskGetTickCount(); // 起動時の時間を取得
-    MCP2517FD* mcpCan = (MCP2517FD*)pvParameters;
-    while (1)
-    {
-        //vTaskDelay(iDelay);
-        vTaskDelayUntil(&xLastWakeTime, iDelay); // 一定周期での呼び出しを保証
-        mcpCan->intHandler(); //not truly an interrupt handler anymore
-        mcpCan->task_MCPIntFD_count++;
+    //const TickType_t iDelay = portTICK_PERIOD_MS;
+    //TickType_t xLastWakeTime = xTaskGetTickCount(); // 起動時の時間を取得
+    //MCP2517FD* mcpCan = (MCP2517FD*)pvParameters;
+    //while (1)
+    //{
+    //    //vTaskDelay(iDelay);
+    //    vTaskDelayUntil(&xLastWakeTime, iDelay); // 一定周期での呼び出しを保証
+    //    mcpCan->intHandler(); //not truly an interrupt handler anymore
+    //    mcpCan->task_MCPIntFD_count++;
+    //}
+    while (1) {
+        if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
+            CAN1.intHandler();
+        }
     }
 }
 
@@ -216,7 +231,8 @@ void MCP2517FD::initializeResources()
 
     pinMode(_CS, OUTPUT);
     digitalWrite(_CS,HIGH);
-    pinMode(_INT,INPUT);
+    pinMode(_INT,INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(_INT), MCPFD_INTHandler, FALLING);
     //digitalWrite(_INT,HIGH);
 
     //attachInterrupt(_INT, MCPFD_INTHandler, FALLING);
@@ -242,7 +258,7 @@ void MCP2517FD::initializeResources()
                            //func        desc    stack, params, priority, handle to task, which core to pin to
     //Tasks take up the stack you allocate here in bytes plus 388 bytes overhead            
     //xTaskCreatePinnedToCore(&task_MCPCAN, "CAN_FD_CALLBACK", 6144, this, 8, &taskHandleMCPCAN, 0);
-    xTaskCreatePinnedToCore(&task_MCPSendFD, "CAN_FD_TX", 8192 , this, 10, &intTaskFD, 0);
+    xTaskCreatePinnedToCore(&task_MCPSendFD, "CAN_FD_TX", 8192 , this, 10, &taskHandleSendFD, 0);
     xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 8192 , this, 18, &intTaskFD, 0);
     xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 1, &taskHandleReset, 0);
     if (debuggingMode) Serial.println("Done with resource init");
