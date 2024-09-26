@@ -258,9 +258,9 @@ void MCP2517FD::initializeResources()
                            //func        desc    stack, params, priority, handle to task, which core to pin to
     //Tasks take up the stack you allocate here in bytes plus 388 bytes overhead            
     //xTaskCreatePinnedToCore(&task_MCPCAN, "CAN_FD_CALLBACK", 6144, this, 8, &taskHandleMCPCAN, 0);
-    xTaskCreatePinnedToCore(&task_MCPSendFD, "CAN_FD_TX", 8192 , this, 10, &taskHandleSendFD, 0);
-    xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 8192 , this, 18, &intTaskFD, 0);
-    xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 1, &taskHandleReset, 0);
+    //xTaskCreatePinnedToCore(&task_MCPSendFD, "CAN_FD_TX", 8192 , this, 10, &taskHandleSendFD, 0);
+    xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 8192 , this, 18, &intTaskFD, 1);
+    xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 1, &taskHandleReset, 1);
     if (debuggingMode) Serial.println("Done with resource init");
 
     initializedResources = true;
@@ -1186,7 +1186,14 @@ void MCP2517FD::Write(uint16_t address, uint8_t data[], uint16_t bytes) {
     //taskENABLE_INTERRUPTS();
 }
 
-void MCP2517FD::LoadFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
+
+void MCP2517FD::WriteFrame(CAN_FRAME_FD &message)
+{
+    uint16_t addr = Read( ADDR_CiFIFOUA + (CiFIFO_OFFSET * 0) );
+    WriteFrameBuffer( addr + 0x400, message );
+}
+
+void MCP2517FD::WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
 {
     uint8_t buffer[76];
     uint32_t *buffPtr;
@@ -1506,7 +1513,7 @@ void MCP2517FD::handleTXFifoISR(int fifo)
             //hardware loading below always uses the same buffer save whether CAN or CANFD
             if (!canToFD(frame, frameFD)) return;
         }
-        LoadFrameBuffer( addr + 0x400, frameFD );
+        WriteFrameBuffer( addr + 0x400, frameFD );
         wroteFrames = 1;
         status = Read(ADDR_CiFIFOSTA + (CiFIFO_OFFSET * fifo));
         //if (debuggingMode) Serial.printf("After write Status: %x\n", status);
@@ -1539,7 +1546,7 @@ void MCP2517FD::handleTXFifo(int fifo, CAN_FRAME_FD &newFrame)
     //if (status & 1) //FIFO has room for this message - immediately send it to hardware
     //{
     //  addr = Read( ADDR_CiFIFOUA + (CiFIFO_OFFSET * fifo) );
-    //  LoadFrameBuffer( addr + 0x400, newFrame );
+    //  WriteFrameBuffer( addr + 0x400, newFrame );
     //  Write8(ADDR_CiFIFOCON + (CiFIFO_OFFSET * fifo) + 1, 3); //Set UINC and TX_Request
     //}
     //else //no room on hardware. Locally buffer in software

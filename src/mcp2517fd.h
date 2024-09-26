@@ -51,7 +51,8 @@ class MCP2517FD : public CAN_COMMON
 	void Write16(uint16_t address, uint16_t data);
 	void Write(uint16_t address, uint32_t data);
 	void Write(uint16_t address, uint8_t data[], uint16_t bytes);
-	void LoadFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
+	void WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
+	void WriteFrame(CAN_FRAME_FD &message);
 	uint32_t ReadFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
 
 	uint8_t Status();
