@@ -5,6 +5,11 @@
 #include "mcp2517fd_defines.h"
 #include <can_common.h>
 
+
+#include <vector>
+#include <utility>
+#include <cstdint>
+
 //#define DEBUG_SETUP
 #define FD_RX_BUFFER_SIZE 1024
 #define FD_TX_BUFFER_SIZE 1024
@@ -53,6 +58,8 @@ class MCP2517FD : public CAN_COMMON
 	void Write(uint16_t address, uint8_t data[], uint16_t bytes);
 	void WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
 	void WriteFrame(CAN_FRAME_FD &message);
+	void WriteMultipleFrameBuffers(const std::vector<std::pair<uint16_t, CAN_FRAME_FD>> &messages);
+	void AppendFrameToBuffer(std::vector<uint8_t> &buffer, uint16_t address, const CAN_FRAME_FD &message);
 	uint32_t ReadFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
 
 	uint8_t Status();

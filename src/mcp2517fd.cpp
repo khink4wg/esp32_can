@@ -1275,6 +1275,75 @@ void MCP2517FD::WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
     
 }
 
+
+void MCP2517FD::WriteMultipleFrameBuffers(const std::vector<std::pair<uint16_t, CAN_FRAME_FD>>& messages)
+{
+    SPI.beginTransaction(fdSPISettings);
+    digitalWrite(_CS, LOW);
+
+    ESP_LOGI("MCP2517FD", "Writing %d frames to the MCP2517FD", messages.size());
+
+    for (const auto& pair : messages) {
+        std::vector<uint8_t> buffer;
+        buffer.reserve(76);  // Maximum possible size for a CAN FD frame
+        AppendFrameToBuffer(buffer, pair.first, pair.second);
+
+        SPI.writeBytes(buffer.data(), buffer.size());
+        
+        // Set UINC and TX_Request for this message
+        Write8(ADDR_CiFIFOCON + 1, 3);
+    }
+
+    digitalWrite(_CS, HIGH);
+    SPI.endTransaction();
+}
+
+void MCP2517FD::AppendFrameToBuffer(std::vector<uint8_t>& buffer, uint16_t address, const CAN_FRAME_FD& message)
+{
+    uint8_t localBuffer[76];
+    uint32_t *buffPtr = reinterpret_cast<uint32_t *>(&localBuffer[2]);
+
+    localBuffer[0] = (CMD_WRITE << 4) | ((address >> 8) & 0xF);
+    localBuffer[1] = address & 0xFF;
+
+    if (message.extended) buffPtr[0] = packExtValue(message.id);
+    else buffPtr[0] = message.id & 0x7FF;
+
+    buffPtr[1] = (message.extended) ? (1 << 4) : 0;
+    buffPtr[1] |= (message.fdMode) ? (3 << 6) : 0; //set both the BRS and FDF bits at once
+    if (message.fdMode)
+        buffPtr[0] |= (message.rrs) ? (1 << 29) : 0;
+    else
+        buffPtr[1] |= (message.rrs) ? (1 << 5) : 0;
+
+    uint8_t dataBytes = message.length;
+    if (!message.fdMode && dataBytes > 8) dataBytes = 8;
+
+    //promote requested frame length to the next allowable size
+    if (dataBytes > 8 && dataBytes < 13) buffPtr[1] |= 9;
+    else if (dataBytes > 12 && dataBytes < 17) buffPtr[1] |= 10;
+    else if (dataBytes > 16 && dataBytes < 21) buffPtr[1] |= 11;
+    else if (dataBytes > 20 && dataBytes < 25) buffPtr[1] |= 12;
+    else if (dataBytes > 24 && dataBytes < 33) buffPtr[1] |= 13;
+    else if (dataBytes > 32 && dataBytes < 49) buffPtr[1] |= 14;
+    else if (dataBytes > 48 && dataBytes < 65) buffPtr[1] |= 15;
+    else
+    {
+        if (dataBytes < 9) buffPtr[1] |= dataBytes;
+        else buffPtr[1] |= 8;
+    }
+
+    //only copy the number of data words we really have to.
+    int copyWords = (dataBytes + 3) / 4;
+    for (int j = 0; j < copyWords; j++)
+    {
+        buffPtr[2 + j] = message.data.uint32[j];
+    }
+
+    // Append the prepared frame to the main buffer
+    buffer.insert(buffer.end(), localBuffer, localBuffer + 10 + (copyWords * 4));
+}
+
 bool MCP2517FD::Interrupt() {
     return (digitalRead(_INT)==LOW);
 }
