@@ -53,6 +53,7 @@ class MCP2517FD : public CAN_COMMON
 	uint16_t Read16(uint16_t address);
     void Read(uint16_t address, uint8_t data[], uint16_t bytes);
 	void Write8(uint16_t address, uint8_t data);
+	void Write8WithoutTransaction(uint16_t address, uint8_t data);
 	void Write16(uint16_t address, uint16_t data);
 	void Write(uint16_t address, uint32_t data);
 	void Write(uint16_t address, uint8_t data[], uint16_t bytes);
@@ -99,6 +100,7 @@ class MCP2517FD : public CAN_COMMON
     bool needMCPReset = false;
     bool needTXFIFOReset = false;
     bool inFDMode;
+	uint32_t send_count = 0;
 	uint32_t rx_queue_count = 0;
 	uint32_t handle_dispatch_count = 0;
 	uint32_t int_handler_count = 0;

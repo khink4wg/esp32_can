@@ -5,7 +5,7 @@
 #include "mcp2517fd_regs.h"
 
 //20Mhz is the fastest we can go (because of the MCP2517/18 chip. The ESP32 or ESP32S3 can go much faster)
-#define FD_SPI_SPEED 10000000
+#define FD_SPI_SPEED 17000000
 
 SPISettings fdSPISettings(FD_SPI_SPEED, MSBFIRST, SPI_MODE0);
 
@@ -1140,6 +1140,21 @@ void MCP2517FD::Write8(uint16_t address, uint8_t data) {
     //taskENABLE_INTERRUPTS();
 }
 
+void MCP2517FD::Write8WithoutTransaction(uint16_t address, uint8_t data) {
+    //taskDISABLE_INTERRUPTS();
+    uint8_t buf[4];
+    buf[0] = (CMD_WRITE << 4) | ((address >> 8) & 0xF);
+    buf[1] = address & 0xFF;
+    buf[2] = data;
+    //SPI.beginTransaction(fdSPISettings);
+    //digitalWrite(_CS,LOW);
+    SPI.writeBytes(buf, 3);
+    digitalWrite(_CS,HIGH);
+    //SPI.endTransaction();
+    //taskENABLE_INTERRUPTS();
+}
+
+
 void MCP2517FD::Write16(uint16_t address, uint16_t data) {
     //taskDISABLE_INTERRUPTS();
     uint8_t buf[5];
@@ -1275,27 +1290,110 @@ void MCP2517FD::WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
     
 }
 
-
-void MCP2517FD::WriteMultipleFrameBuffers(const std::vector<std::pair<uint16_t, CAN_FRAME_FD>>& messages)
+void MCP2517FD::WriteMultipleFrameBuffers(const std::vector<std::pair<uint16_t, CAN_FRAME_FD>> &messages)
 {
-    SPI.beginTransaction(fdSPISettings);
-    digitalWrite(_CS, LOW);
+    //for (const auto& pair : messages) {
+    //    CAN_FRAME_FD message = pair.second;
+    //    this->WriteFrame(message);
+    //    send_count++;
+    //}
 
-    ESP_LOGI("MCP2517FD", "Writing %d frames to the MCP2517FD", messages.size());
+    // taskDISABLE_INTERRUPTS();
+
+    //SPI.beginTransaction(fdSPISettings);
+    //digitalWrite(_CS, LOW);
 
     for (const auto& pair : messages) {
-        std::vector<uint8_t> buffer;
-        buffer.reserve(76);  // Maximum possible size for a CAN FD frame
-        AppendFrameToBuffer(buffer, pair.first, pair.second);
+        uint16_t address = Read( ADDR_CiFIFOUA + (CiFIFO_OFFSET * 0) ) + 0x400;
+    
+        CAN_FRAME_FD message = pair.second;
+        uint8_t buffer[76];
+        uint32_t *buffPtr;
+        int dataBytes;
 
-        SPI.writeBytes(buffer.data(), buffer.size());
-        
-        // Set UINC and TX_Request for this message
+        buffer[0] = (CMD_WRITE << 4) | ((address >> 8) & 0xF);
+        buffer[1] = address & 0xFF;
+        buffPtr = (uint32_t *)&buffer[2];
+
+        if (message.extended)
+            buffPtr[0] = packExtValue(message.id);
+        else
+            buffPtr[0] = message.id & 0x7FF;
+
+        buffPtr[1] = (message.extended) ? (1 << 4) : 0;
+        buffPtr[1] |= (message.fdMode) ? (3 << 6) : 0; // set both the BRS and FDF bits at once
+        if (message.fdMode)
+            buffPtr[0] |= (message.rrs) ? (1 << 29) : 0;
+        else
+            buffPtr[1] |= (message.rrs) ? (1 << 5) : 0;
+        if (!message.fdMode && message.length > 8)
+            message.length = 8;
+        dataBytes = message.length;
+
+        // promote requested frame length to the next allowable size
+        if (message.length > 8 && message.length < 13)
+            buffPtr[1] |= 9;
+        else if (message.length > 12 && message.length < 17)
+            buffPtr[1] |= 10;
+        else if (message.length > 16 && message.length < 21)
+            buffPtr[1] |= 11;
+        else if (message.length > 20 && message.length < 25)
+            buffPtr[1] |= 12;
+        else if (message.length > 24 && message.length < 33)
+            buffPtr[1] |= 13;
+        else if (message.length > 32 && message.length < 49)
+            buffPtr[1] |= 14;
+        else if (message.length > 48 && message.length < 65)
+            buffPtr[1] |= 15;
+        else
+        {
+            if (message.length < 9)
+                buffPtr[1] |= message.length;
+            else
+                buffPtr[1] |= 8;
+        }
+
+        // only copy the number of data words we really have to.
+        int copyWords = (dataBytes + 3) / 4;
+        for (int j = 0; j < copyWords; j++)
+        {
+            buffPtr[2 + j] = message.data.uint32[j];
+        }
+
+        SPI.beginTransaction(fdSPISettings);
+        digitalWrite(_CS, LOW);
+        SPI.writeBytes((uint8_t *)&buffer[0], 10 + (copyWords * 4)); // and only write just as many bytes as we need to for this frame
+        //Write8WithoutTransaction(ADDR_CiFIFOCON + 1, 3); // Set UINC and TX_Request
+        digitalWrite(_CS, HIGH);
+        Write8WithoutTransaction(ADDR_CiFIFOCON + 1, 3); // Set UINC and TX_Request
+        SPI.endTransaction();
         Write8(ADDR_CiFIFOCON + 1, 3);
     }
+    //digitalWrite(_CS, HIGH);
+    //SPI.endTransaction();
+    //digitalWrite(_CS, HIGH);
+    //SPI.endTransaction();
+    //Write8(ADDR_CiFIFOCON + 1, 3); // Set UINC and TX_Request
 
-    digitalWrite(_CS, HIGH);
-    SPI.endTransaction();
+    // taskENABLE_INTERRUPTS();
+
+    //for (const auto& pair : messages) {
+    //    SPI.beginTransaction(fdSPISettings);
+    //    digitalWrite(_CS, LOW);
+
+    //    std::vector<uint8_t> buffer;
+    //    buffer.reserve(76);  // Maximum possible size for a CAN FD frame
+    //    AppendFrameToBuffer(buffer, pair.first, pair.second);
+
+    //    SPI.writeBytes(buffer.data(), buffer.size());
+    //    
+    //    // Set UINC and TX_Request for this message
+    //    Write8(ADDR_CiFIFOCON + 1, 3);
+    //    // nano second delay to allow the MCP2517FD to process the frame
+    //    digitalWrite(_CS, HIGH);
+    //    SPI.endTransaction();
+    //}
+
 }
 
 void MCP2517FD::AppendFrameToBuffer(std::vector<uint8_t>& buffer, uint16_t address, const CAN_FRAME_FD& message)
