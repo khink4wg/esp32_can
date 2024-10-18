@@ -14,6 +14,7 @@
 #define FD_RX_BUFFER_SIZE 1024
 #define FD_TX_BUFFER_SIZE 1024
 #define FD_NUM_FILTERS 32
+#define INT_FLAG_LOG_SIZE 1000
 
 class MCP2517FD : public CAN_COMMON
 {
@@ -39,6 +40,7 @@ class MCP2517FD : public CAN_COMMON
 	bool sendFrame(CAN_FRAME& txFrame);
 	bool rx_avail();
 	uint16_t available(); //like rx_avail but returns the number of waiting frames
+	uint16_t waitingRxQueueCount();
 	uint32_t get_rx_buff(CAN_FRAME &msg);
 	//special FD functions required to reimplement to support FD mode
 	uint32_t get_rx_buffFD(CAN_FRAME_FD &msg);
@@ -105,6 +107,20 @@ class MCP2517FD : public CAN_COMMON
 	uint32_t handle_dispatch_count = 0;
 	uint32_t int_handler_count = 0;
 	uint32_t task_MCPIntFD_count = 0;
+	uint32_t transmitErrorCount = 0;
+	uint32_t receiveErrorCount = 0;
+	uint32_t int_pin_count = 0;
+	uint32_t transmitRecceiveErrorCountResister;
+	uint32_t interruptCode;
+	uint32_t fifoStatus;
+	// intflag log 
+	uint32_t intFlagLog[INT_FLAG_LOG_SIZE];
+	uint16_t intFlagLogIndex = 0;
+	bool enableListener = true;
+	uint32_t ci_int = 0;
+	uint32_t receiveOverflowInterruptStatus;
+	uint32_t crc;
+	uint32_t ciConLog[INT_FLAG_LOG_SIZE];
 
   private:
 	bool _init(uint32_t baud, uint8_t freq, uint8_t sjw, bool autoBaud);
@@ -122,6 +138,8 @@ class MCP2517FD : public CAN_COMMON
 	uint32_t getErrorFlags();
 	uint32_t getCIBDIAG0();
 	uint32_t getCIBDIAG1();
+	uint32_t getCITREC();
+
 	uint32_t getBitConfig();
 
     // Pin variables
