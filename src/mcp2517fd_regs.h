@@ -319,6 +319,44 @@ typedef union _REG_CiINT {
     uint8_t byte[4];
 } REG_CiINT;
 
+typedef union _REG_CiINT_RAW {
+    struct {
+        // Flag
+        uint32_t TXIF : 1;
+        uint32_t RXIF : 1;
+        uint32_t TBCIF : 1;
+        uint32_t MODIF : 1;
+        uint32_t TEFIF : 1;
+        uint32_t unimplemented1 : 3;
+        uint32_t ECCIF : 1;
+        uint32_t SPICRCIF : 1;
+        uint32_t TXATIF : 1;
+        uint32_t RXOVIF : 1;
+        uint32_t SERRIF : 1;
+        uint32_t CERRIF : 1;
+        uint32_t WAKIF : 1;
+        uint32_t IVMIF : 1;
+        // Enable
+        uint32_t TXIE : 1;
+        uint32_t RXIE : 1;
+        uint32_t TBCIE : 1;
+        uint32_t MODIE : 1;
+        uint32_t TEFIE : 1;
+        uint32_t unimplemented2 : 3;
+        uint32_t ECCIE : 1;
+        uint32_t SPICRCIE : 1;
+        uint32_t TXATIE : 1;
+        uint32_t RXOVIE : 1;
+        uint32_t SERRIE : 1;
+        uint32_t CERRIE : 1;
+        uint32_t WAKIE : 1;
+        uint32_t IVMIE : 1;
+    } bF;
+    uint32_t word;
+    uint8_t byte[4];
+} REG_CiINT_RAW;
+
+
 // *****************************************************************************
 //! Interrupt Flag Register
 

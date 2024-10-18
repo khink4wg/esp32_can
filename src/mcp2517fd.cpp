@@ -763,10 +763,31 @@ bool MCP2517FD::_initFD(uint32_t nominalSpeed, uint32_t dataSpeed, uint8_t freq,
         }
     }
     // Enable interrupts
-    Write(ADDR_CiINT, 0xB8030000); //Enable Invalid Msg, Bus err, sys err, rx overflow, rx fifo, tx fifo interrupts
+    REG_CiINT_RAW intSettings;
+    // Enable interrupts
+    intSettings.word = 0; //clear it all out
+    intSettings.bF.TXIE = 0; //Don't enable TX Fifo interrupts (bit 16)
+    intSettings.bF.RXIE = 1; //Enable RX Fifo interrupts (bit 17)
+    intSettings.bF.TBCIE = 0; //Don't enable time base counter interrupts (bit 18)
+    intSettings.bF.MODIE = 0; //Don't enable mode change interrupts (bit 19)
+    intSettings.bF.TEFIE = 0; //Don't enable Transmit Event FIFO interrupts (bit 20)
+    intSettings.bF.ECCIE = 0; //Don't enable ECC Error interrupts (bit 24)
+    intSettings.bF.SPICRCIE = 0; //Don't enable SPI CRC error interrupts (bit 25)
+    intSettings.bF.TXATIE = 0; //Don't enable TX attempts interrupts (bit 26)
+    intSettings.bF.RXOVIE = 1; //Enable RX overflow interrupts (bit 27)
+    intSettings.bF.SERRIE = 1; //Enable system error interrupts (bit 28)
+    intSettings.bF.CERRIE = 1; //Enable CAN Bus error interrupts (bit 29)
+    intSettings.bF.WAKIE = 0; //Don't enable wake interrupts (bit 30)
+    intSettings.bF.IVMIE = 1; //Enable invalid message interrupts (bit 31)
+    ESP_LOGI("MCP2517FD", "IntSettings: %x", intSettings.word);
+    ci_int = intSettings.word;
+    
+    //Write(ADDR_CiINT, 0xB8030000); //Enable Invalid Msg, Bus err, sys err, rx overflow, rx fifo, tx fifo interrupts
+    Write(ADDR_CiINT, intSettings.word);
     // Test that we can read back from the MCP2517FD what we wrote to it
     uint32_t rtn = Read(ADDR_CiINT);
-    if ((rtn & 0xFFFF0000) == 0xB8030000)
+    //if ((rtn & 0xFFFF0000) == 0xB8030000)
+    if ((rtn & 0xFFFF0000) == intSettings.word)
     {
         if (debuggingMode) Serial.println("MCP2517 InitFD Success");
         errorFlags = 0;
@@ -1552,7 +1573,9 @@ void MCP2517FD::intHandler(void) {
     if (!running) return;
 
     // determine which interrupt flags have been set
-    uint32_t interruptFlags = Read(ADDR_CiINT);
+    REG_CiINT_RAW intFlags;
+    intFlags.word = Read(ADDR_CiINT);
+    uint32_t interruptFlags = intFlags.word;
     receiveOverflowInterruptStatus = Read(ADDR_CiRXOVIF);
     transmitRecceiveErrorCountResister = getCITREC();
     receiveErrorCount = transmitRecceiveErrorCountResister & 0xFF;
@@ -1569,7 +1592,7 @@ void MCP2517FD::intHandler(void) {
     //  if (uxQueueMessagesWaiting(txQueue) > 0) handleTXFifoISR(0); //if we have messages to send then try to queue them in the TX fifo
     //}
 
-    if(interruptFlags & 2)  //Receive FIFO interrupt
+    if(intFlags.bF.RXIF)  //Receive FIFO interrupt
     {
         //no need to ask which FIFO matched, there is only one RX FIFO configured in this library
         //So, ask for frames out of the FIFO until it no longer has any
@@ -1598,25 +1621,26 @@ void MCP2517FD::intHandler(void) {
         ciConLog[intFlagLogIndex] = Read(ADDR_CiCON);
         intFlagLogIndex ++;
     }
-    if (interruptFlags & (1 << 11)) //Receive Object Overflow
+    if (intFlags.bF.RXOVIF) //Receive Object Overflow
     {
         //once again, we know which FIFO must have overflowed - what to do about it though?
         errorFlags |= 1;
     }
-    if (interruptFlags & (1 << 12)) //System error
+    if (intFlags.bF.SERRIF) //System error
     {
         errorFlags |= 2;
     }
-    if (interruptFlags & (1 << 13)) //CANBus error
+    if (intFlags.bF.CERRIF) //CANBus error
     {
         errorFlags |= 4;
     }
-    if (interruptFlags & (1 << 15)) //Invalid msg interrupt
+    if (intFlags.bF.IVMIF) //Invalid msg interrupt
     {
         errorFlags |= 8;
     }
     if (errorFlags > 0)
     {
+        ESP_LOGE("MCP2517FD", "Error Flags: %d", errorFlags);
         //if (debuggingMode) Serial.write('?');
         uint32_t diagBits = getCIBDIAG1(); //get a detailed fault status
 
