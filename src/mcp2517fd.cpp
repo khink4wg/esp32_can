@@ -70,19 +70,19 @@ void task_ResetWatcher(void *pvParameters)
         if (ctrlVal == 7)
         {
             mcpCan->needMCPReset = true;
-            if (mcpCan->debuggingMode) Serial.println("!!!RESTRICTED MODE!!!");
+            ESP_LOGE("MCP2517FD", "Restricted Mode Detected");
         }
 
         if (mcpCan->needMCPReset)
         {
             mcpCan->needMCPReset = false;
-            if (mcpCan->debuggingMode) Serial.println("Reset 2517FD hardware");
+            ESP_LOGE("MCP2517FD", "Reset 2517FD hardware");
             mcpCan->resetHardware();
         }
         if (mcpCan->needTXFIFOReset)
         {
             mcpCan->needTXFIFOReset = false;
-            if (mcpCan->debuggingMode) Serial.println("Reset TX FIFO");
+            ESP_LOGE("MCP2517FD", "Reset TX FIFO");
             mcpCan->txQueueSetup();
         }
     }
@@ -793,6 +793,12 @@ uint16_t MCP2517FD::available()
     return uxQueueSpacesAvailable(rxQueue);
 }
 
+uint16_t MCP2517FD::waitingRxQueueCount()
+{
+    if (!rxQueue) return 0; //why would this happen though?!
+	return uxQueueMessagesWaiting(rxQueue);
+}
+
 int MCP2517FD::_setFilter(uint32_t id, uint32_t mask, bool extended)
 {
     uint8_t filterCtrl;
@@ -932,6 +938,11 @@ uint32_t MCP2517FD::getCIBDIAG1()
 uint32_t MCP2517FD::getBitConfig()
 {
     return Read(ADDR_CiNBTCFG);
+}
+
+uint32_t MCP2517FD::getCITREC()
+{
+    return Read(ADDR_CiTREC);
 }
 
 //Prints to screen basically all of the important registers including debugging registers.
@@ -1281,6 +1292,7 @@ void MCP2517FD::WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
     SPI.endTransaction();
     //taskENABLE_INTERRUPTS();
     Write8(ADDR_CiFIFOCON + 1, 3); //Set UINC and TX_Request
+    send_count++;
     if (debuggingMode)
     {
         Serial.write('_');
@@ -1541,6 +1553,10 @@ void MCP2517FD::intHandler(void) {
 
     // determine which interrupt flags have been set
     uint32_t interruptFlags = Read(ADDR_CiINT);
+    receiveOverflowInterruptStatus = Read(ADDR_CiRXOVIF);
+    transmitRecceiveErrorCountResister = getCITREC();
+    receiveErrorCount = transmitRecceiveErrorCountResister & 0xFF;
+    transmitErrorCount = (transmitRecceiveErrorCountResister >> 8) & 0xFF;
 
     //if(interruptFlags & 1)  //Transmit FIFO interrupt
     //{
@@ -1574,6 +1590,13 @@ void MCP2517FD::intHandler(void) {
                 handleFrameDispatch(message, filtHit);
             }
         }
+    } else {
+        crc = Read(ADDR_CRC);
+        interruptCode  = Read(ADDR_CiVEC);
+        status = Read( ADDR_CiFIFOSTA );
+        intFlagLog[intFlagLogIndex] = status;
+        ciConLog[intFlagLogIndex] = Read(ADDR_CiCON);
+        intFlagLogIndex ++;
     }
     if (interruptFlags & (1 << 11)) //Receive Object Overflow
     {
@@ -1798,7 +1821,7 @@ void MCP2517FD::handleFrameDispatch(CAN_FRAME_FD &frame, int filterHit)
         xQueueSend(callbackQueueMCP, &frame, 0);
         return;
     }
-    else
+    else if (enableListener)
     {
         for (int listenerPos = 0; listenerPos < SIZE_LISTENERS; listenerPos++)
         {
@@ -1826,10 +1849,12 @@ void MCP2517FD::handleFrameDispatch(CAN_FRAME_FD &frame, int filterHit)
     }
     //if none of the callback types caught this frame then queue it in the buffer
     xQueueSend(rxQueue, &frame, 0);
+    rx_queue_count++;
 }
 
 void MCP2517FD::handleFrameDispatch(CAN_FRAME &frame, int filterHit)
 {
+    handle_dispatch_count++;
     CANListener *thisListener;
 
     //First, try to send a callback. If no callback registered then buffer the frame.
