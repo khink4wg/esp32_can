@@ -48,7 +48,11 @@ void task_MCPIntFD( void *pvParameters )
     //}
     while (1) {
         if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
-            CAN1.intHandler();
+            if (CAN1.enableInterrupts)
+            {
+
+                CAN1.intHandler();
+            }
         }
     }
 }
