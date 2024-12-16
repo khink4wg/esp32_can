@@ -1644,7 +1644,7 @@ void MCP2517FD::intHandler(void) {
     }
     if (errorFlags > 0)
     {
-        ESP_LOGE("MCP2517FD", "Error Flags: %d", errorFlags);
+        //ESP_LOGE("MCP2517FD", "Error Flags: %d", errorFlags);
         //if (debuggingMode) Serial.write('?');
         uint32_t diagBits = getCIBDIAG1(); //get a detailed fault status
 
