@@ -5,20 +5,55 @@
 #include "mcp2517fd_regs.h"
 
 //20Mhz is the fastest we can go (because of the MCP2517/18 chip. The ESP32 or ESP32S3 can go much faster)
-#define FD_SPI_SPEED 10000000
+#define FD_SPI_SPEED 17000000
 
 SPISettings fdSPISettings(FD_SPI_SPEED, MSBFIRST, SPI_MODE0);
+
+void task_MCPSendFD(void *pvParameters)
+{
+    const TickType_t iDelay = portTICK_PERIOD_MS;
+    TickType_t xLastWakeTime = xTaskGetTickCount(); // 起動時の時間を取得
+    MCP2517FD* mcpCan = (MCP2517FD*)pvParameters;
+    while (1)
+    {
+        // vTaskDelay(iDelay);
+        vTaskDelayUntil(&xLastWakeTime, iDelay); // 一定周期での呼び出しを保証
+        mcpCan->sendHandler();                    // not truly an interrupt handler anymore
+    }
+}
+
+// CANFDの受信タスクを割り込みピン_INTで呼び出す
+void IRAM_ATTR MCPFD_INTHandler()
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    vTaskNotifyGiveFromISR(CAN1.intTaskFD, &xHigherPriorityTaskWoken);
+    if (xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
+}
 
 //Modified to loop, waiting for 1ms then pretending an interrupt came in
 //basically switches to a polled system where we do not pay attention to actual interrupts
 void task_MCPIntFD( void *pvParameters )
 {
-    const TickType_t iDelay = portTICK_PERIOD_MS;
-    MCP2517FD* mcpCan = (MCP2517FD*)pvParameters;
-    while (1)
-    {
-        vTaskDelay(iDelay);
-        mcpCan->intHandler(); //not truly an interrupt handler anymore
+    //const TickType_t iDelay = portTICK_PERIOD_MS;
+    //TickType_t xLastWakeTime = xTaskGetTickCount(); // 起動時の時間を取得
+    //MCP2517FD* mcpCan = (MCP2517FD*)pvParameters;
+    //while (1)
+    //{
+    //    //vTaskDelay(iDelay);
+    //    vTaskDelayUntil(&xLastWakeTime, iDelay); // 一定周期での呼び出しを保証
+    //    mcpCan->intHandler(); //not truly an interrupt handler anymore
+    //    mcpCan->task_MCPIntFD_count++;
+    //}
+    while (1) {
+        if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
+            if (CAN1.enableInterrupts)
+            {
+
+                CAN1.intHandler();
+            }
+        }
     }
 }
 
@@ -39,19 +74,19 @@ void task_ResetWatcher(void *pvParameters)
         if (ctrlVal == 7)
         {
             mcpCan->needMCPReset = true;
-            if (mcpCan->debuggingMode) Serial.println("!!!RESTRICTED MODE!!!");
+            ESP_LOGE("MCP2517FD", "Restricted Mode Detected");
         }
 
         if (mcpCan->needMCPReset)
         {
             mcpCan->needMCPReset = false;
-            if (mcpCan->debuggingMode) Serial.println("Reset 2517FD hardware");
+            ESP_LOGE("MCP2517FD", "Reset 2517FD hardware");
             mcpCan->resetHardware();
         }
         if (mcpCan->needTXFIFOReset)
         {
             mcpCan->needTXFIFOReset = false;
-            if (mcpCan->debuggingMode) Serial.println("Reset TX FIFO");
+            ESP_LOGE("MCP2517FD", "Reset TX FIFO");
             mcpCan->txQueueSetup();
         }
     }
@@ -200,7 +235,8 @@ void MCP2517FD::initializeResources()
 
     pinMode(_CS, OUTPUT);
     digitalWrite(_CS,HIGH);
-    pinMode(_INT,INPUT);
+    pinMode(_INT,INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(_INT), MCPFD_INTHandler, FALLING);
     //digitalWrite(_INT,HIGH);
 
     //attachInterrupt(_INT, MCPFD_INTHandler, FALLING);
@@ -225,9 +261,10 @@ void MCP2517FD::initializeResources()
 
                            //func        desc    stack, params, priority, handle to task, which core to pin to
     //Tasks take up the stack you allocate here in bytes plus 388 bytes overhead            
-    xTaskCreatePinnedToCore(&task_MCPCAN, "CAN_FD_CALLBACK", 6144, this, 8, &taskHandleMCPCAN, 0);
-    xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 4096, this, 19, &intTaskFD, 0);
-    xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 7, &taskHandleReset, 0);
+    //xTaskCreatePinnedToCore(&task_MCPCAN, "CAN_FD_CALLBACK", 6144, this, 8, &taskHandleMCPCAN, 0);
+    //xTaskCreatePinnedToCore(&task_MCPSendFD, "CAN_FD_TX", 8192 , this, 10, &taskHandleSendFD, 0);
+    xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 8192 , this, 18, &intTaskFD, 1);
+    xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 1, &taskHandleReset, 1);
     if (debuggingMode) Serial.println("Done with resource init");
 
     initializedResources = true;
@@ -730,10 +767,31 @@ bool MCP2517FD::_initFD(uint32_t nominalSpeed, uint32_t dataSpeed, uint8_t freq,
         }
     }
     // Enable interrupts
-    Write(ADDR_CiINT, 0xB8030000); //Enable Invalid Msg, Bus err, sys err, rx overflow, rx fifo, tx fifo interrupts
+    REG_CiINT_RAW intSettings;
+    // Enable interrupts
+    intSettings.word = 0; //clear it all out
+    intSettings.bF.TXIE = 0; //Don't enable TX Fifo interrupts (bit 16)
+    intSettings.bF.RXIE = 1; //Enable RX Fifo interrupts (bit 17)
+    intSettings.bF.TBCIE = 0; //Don't enable time base counter interrupts (bit 18)
+    intSettings.bF.MODIE = 0; //Don't enable mode change interrupts (bit 19)
+    intSettings.bF.TEFIE = 0; //Don't enable Transmit Event FIFO interrupts (bit 20)
+    intSettings.bF.ECCIE = 0; //Don't enable ECC Error interrupts (bit 24)
+    intSettings.bF.SPICRCIE = 0; //Don't enable SPI CRC error interrupts (bit 25)
+    intSettings.bF.TXATIE = 0; //Don't enable TX attempts interrupts (bit 26)
+    intSettings.bF.RXOVIE = 1; //Enable RX overflow interrupts (bit 27)
+    intSettings.bF.SERRIE = 1; //Enable system error interrupts (bit 28)
+    intSettings.bF.CERRIE = 1; //Enable CAN Bus error interrupts (bit 29)
+    intSettings.bF.WAKIE = 0; //Don't enable wake interrupts (bit 30)
+    intSettings.bF.IVMIE = 1; //Enable invalid message interrupts (bit 31)
+    ESP_LOGI("MCP2517FD", "IntSettings: %x", intSettings.word);
+    ci_int = intSettings.word;
+    
+    //Write(ADDR_CiINT, 0xB8030000); //Enable Invalid Msg, Bus err, sys err, rx overflow, rx fifo, tx fifo interrupts
+    Write(ADDR_CiINT, intSettings.word);
     // Test that we can read back from the MCP2517FD what we wrote to it
     uint32_t rtn = Read(ADDR_CiINT);
-    if ((rtn & 0xFFFF0000) == 0xB8030000)
+    //if ((rtn & 0xFFFF0000) == 0xB8030000)
+    if ((rtn & 0xFFFF0000) == intSettings.word)
     {
         if (debuggingMode) Serial.println("MCP2517 InitFD Success");
         errorFlags = 0;
@@ -754,6 +812,13 @@ bool MCP2517FD::_initFD(uint32_t nominalSpeed, uint32_t dataSpeed, uint8_t freq,
 }
 
 uint16_t MCP2517FD::available()
+{
+    if (!rxQueue) return 0; //why would this happen though?!
+	//return uxQueueMessagesWaiting(rxQueue);
+    return uxQueueSpacesAvailable(rxQueue);
+}
+
+uint16_t MCP2517FD::waitingRxQueueCount()
 {
     if (!rxQueue) return 0; //why would this happen though?!
 	return uxQueueMessagesWaiting(rxQueue);
@@ -898,6 +963,11 @@ uint32_t MCP2517FD::getCIBDIAG1()
 uint32_t MCP2517FD::getBitConfig()
 {
     return Read(ADDR_CiNBTCFG);
+}
+
+uint32_t MCP2517FD::getCITREC()
+{
+    return Read(ADDR_CiTREC);
 }
 
 //Prints to screen basically all of the important registers including debugging registers.
@@ -1106,6 +1176,21 @@ void MCP2517FD::Write8(uint16_t address, uint8_t data) {
     //taskENABLE_INTERRUPTS();
 }
 
+void MCP2517FD::Write8WithoutTransaction(uint16_t address, uint8_t data) {
+    //taskDISABLE_INTERRUPTS();
+    uint8_t buf[4];
+    buf[0] = (CMD_WRITE << 4) | ((address >> 8) & 0xF);
+    buf[1] = address & 0xFF;
+    buf[2] = data;
+    //SPI.beginTransaction(fdSPISettings);
+    //digitalWrite(_CS,LOW);
+    SPI.writeBytes(buf, 3);
+    digitalWrite(_CS,HIGH);
+    //SPI.endTransaction();
+    //taskENABLE_INTERRUPTS();
+}
+
+
 void MCP2517FD::Write16(uint16_t address, uint16_t data) {
     //taskDISABLE_INTERRUPTS();
     uint8_t buf[5];
@@ -1152,7 +1237,14 @@ void MCP2517FD::Write(uint16_t address, uint8_t data[], uint16_t bytes) {
     //taskENABLE_INTERRUPTS();
 }
 
-void MCP2517FD::LoadFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
+
+void MCP2517FD::WriteFrame(CAN_FRAME_FD &message)
+{
+    uint16_t addr = Read( ADDR_CiFIFOUA + (CiFIFO_OFFSET * 0) );
+    WriteFrameBuffer( addr + 0x400, message );
+}
+
+void MCP2517FD::WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
 {
     uint8_t buffer[76];
     uint32_t *buffPtr;
@@ -1225,6 +1317,7 @@ void MCP2517FD::LoadFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
     SPI.endTransaction();
     //taskENABLE_INTERRUPTS();
     Write8(ADDR_CiFIFOCON + 1, 3); //Set UINC and TX_Request
+    send_count++;
     if (debuggingMode)
     {
         Serial.write('_');
@@ -1232,6 +1325,158 @@ void MCP2517FD::LoadFrameBuffer(uint16_t address, CAN_FRAME_FD &message)
         Serial.printf("FIFOCON: 0x%x\n", cnf);
     }
     
+}
+
+void MCP2517FD::WriteMultipleFrameBuffers(const std::vector<std::pair<uint16_t, CAN_FRAME_FD>> &messages)
+{
+    //for (const auto& pair : messages) {
+    //    CAN_FRAME_FD message = pair.second;
+    //    this->WriteFrame(message);
+    //    send_count++;
+    //}
+
+    // taskDISABLE_INTERRUPTS();
+
+    //SPI.beginTransaction(fdSPISettings);
+    //digitalWrite(_CS, LOW);
+
+    for (const auto& pair : messages) {
+        uint16_t address = Read( ADDR_CiFIFOUA + (CiFIFO_OFFSET * 0) ) + 0x400;
+    
+        CAN_FRAME_FD message = pair.second;
+        uint8_t buffer[76];
+        uint32_t *buffPtr;
+        int dataBytes;
+
+        buffer[0] = (CMD_WRITE << 4) | ((address >> 8) & 0xF);
+        buffer[1] = address & 0xFF;
+        buffPtr = (uint32_t *)&buffer[2];
+
+        if (message.extended)
+            buffPtr[0] = packExtValue(message.id);
+        else
+            buffPtr[0] = message.id & 0x7FF;
+
+        buffPtr[1] = (message.extended) ? (1 << 4) : 0;
+        buffPtr[1] |= (message.fdMode) ? (3 << 6) : 0; // set both the BRS and FDF bits at once
+        if (message.fdMode)
+            buffPtr[0] |= (message.rrs) ? (1 << 29) : 0;
+        else
+            buffPtr[1] |= (message.rrs) ? (1 << 5) : 0;
+        if (!message.fdMode && message.length > 8)
+            message.length = 8;
+        dataBytes = message.length;
+
+        // promote requested frame length to the next allowable size
+        if (message.length > 8 && message.length < 13)
+            buffPtr[1] |= 9;
+        else if (message.length > 12 && message.length < 17)
+            buffPtr[1] |= 10;
+        else if (message.length > 16 && message.length < 21)
+            buffPtr[1] |= 11;
+        else if (message.length > 20 && message.length < 25)
+            buffPtr[1] |= 12;
+        else if (message.length > 24 && message.length < 33)
+            buffPtr[1] |= 13;
+        else if (message.length > 32 && message.length < 49)
+            buffPtr[1] |= 14;
+        else if (message.length > 48 && message.length < 65)
+            buffPtr[1] |= 15;
+        else
+        {
+            if (message.length < 9)
+                buffPtr[1] |= message.length;
+            else
+                buffPtr[1] |= 8;
+        }
+
+        // only copy the number of data words we really have to.
+        int copyWords = (dataBytes + 3) / 4;
+        for (int j = 0; j < copyWords; j++)
+        {
+            buffPtr[2 + j] = message.data.uint32[j];
+        }
+
+        SPI.beginTransaction(fdSPISettings);
+        digitalWrite(_CS, LOW);
+        SPI.writeBytes((uint8_t *)&buffer[0], 10 + (copyWords * 4)); // and only write just as many bytes as we need to for this frame
+        //Write8WithoutTransaction(ADDR_CiFIFOCON + 1, 3); // Set UINC and TX_Request
+        digitalWrite(_CS, HIGH);
+        Write8WithoutTransaction(ADDR_CiFIFOCON + 1, 3); // Set UINC and TX_Request
+        SPI.endTransaction();
+        Write8(ADDR_CiFIFOCON + 1, 3);
+    }
+    //digitalWrite(_CS, HIGH);
+    //SPI.endTransaction();
+    //digitalWrite(_CS, HIGH);
+    //SPI.endTransaction();
+    //Write8(ADDR_CiFIFOCON + 1, 3); // Set UINC and TX_Request
+
+    // taskENABLE_INTERRUPTS();
+
+    //for (const auto& pair : messages) {
+    //    SPI.beginTransaction(fdSPISettings);
+    //    digitalWrite(_CS, LOW);
+
+    //    std::vector<uint8_t> buffer;
+    //    buffer.reserve(76);  // Maximum possible size for a CAN FD frame
+    //    AppendFrameToBuffer(buffer, pair.first, pair.second);
+
+    //    SPI.writeBytes(buffer.data(), buffer.size());
+    //    
+    //    // Set UINC and TX_Request for this message
+    //    Write8(ADDR_CiFIFOCON + 1, 3);
+    //    // nano second delay to allow the MCP2517FD to process the frame
+    //    digitalWrite(_CS, HIGH);
+    //    SPI.endTransaction();
+    //}
+
+}
+
+void MCP2517FD::AppendFrameToBuffer(std::vector<uint8_t>& buffer, uint16_t address, const CAN_FRAME_FD& message)
+{
+    uint8_t localBuffer[76];
+    uint32_t *buffPtr = reinterpret_cast<uint32_t *>(&localBuffer[2]);
+
+    localBuffer[0] = (CMD_WRITE << 4) | ((address >> 8) & 0xF);
+    localBuffer[1] = address & 0xFF;
+
+    if (message.extended) buffPtr[0] = packExtValue(message.id);
+    else buffPtr[0] = message.id & 0x7FF;
+
+    buffPtr[1] = (message.extended) ? (1 << 4) : 0;
+    buffPtr[1] |= (message.fdMode) ? (3 << 6) : 0; //set both the BRS and FDF bits at once
+    if (message.fdMode)
+        buffPtr[0] |= (message.rrs) ? (1 << 29) : 0;
+    else
+        buffPtr[1] |= (message.rrs) ? (1 << 5) : 0;
+
+    uint8_t dataBytes = message.length;
+    if (!message.fdMode && dataBytes > 8) dataBytes = 8;
+
+    //promote requested frame length to the next allowable size
+    if (dataBytes > 8 && dataBytes < 13) buffPtr[1] |= 9;
+    else if (dataBytes > 12 && dataBytes < 17) buffPtr[1] |= 10;
+    else if (dataBytes > 16 && dataBytes < 21) buffPtr[1] |= 11;
+    else if (dataBytes > 20 && dataBytes < 25) buffPtr[1] |= 12;
+    else if (dataBytes > 24 && dataBytes < 33) buffPtr[1] |= 13;
+    else if (dataBytes > 32 && dataBytes < 49) buffPtr[1] |= 14;
+    else if (dataBytes > 48 && dataBytes < 65) buffPtr[1] |= 15;
+    else
+    {
+        if (dataBytes < 9) buffPtr[1] |= dataBytes;
+        else buffPtr[1] |= 8;
+    }
+
+    //only copy the number of data words we really have to.
+    int copyWords = (dataBytes + 3) / 4;
+    for (int j = 0; j < copyWords; j++)
+    {
+        buffPtr[2 + j] = message.data.uint32[j];
+    }
+
+    // Append the prepared frame to the main buffer
+    buffer.insert(buffer.end(), localBuffer, localBuffer + 10 + (copyWords * 4));
 }
 
 bool MCP2517FD::Interrupt() {
@@ -1310,9 +1555,18 @@ bool MCP2517FD::GetRXFrame(CAN_FRAME &frame) {
     return false;
 }
 
+void MCP2517FD::sendHandler(void)
+{
+    if (!running)
+        return;
+    if (uxQueueMessagesWaiting(txQueue) > 0)
+        handleTXFifoISR(0); // if we have messages to send then try to queue them in the TX fifo
+}
+
 //Not truly an interrupt handler in the sense that it does NOT run in interrupt context
 //but it does handle the MCP2517FD interrupt still.
 void MCP2517FD::intHandler(void) {
+    int_handler_count++;
     CAN_FRAME_FD messageFD;
     CAN_FRAME message;
     uint32_t ctrlVal;
@@ -1323,7 +1577,13 @@ void MCP2517FD::intHandler(void) {
     if (!running) return;
 
     // determine which interrupt flags have been set
-    uint32_t interruptFlags = Read(ADDR_CiINT);
+    REG_CiINT_RAW intFlags;
+    intFlags.word = Read(ADDR_CiINT);
+    uint32_t interruptFlags = intFlags.word;
+    receiveOverflowInterruptStatus = Read(ADDR_CiRXOVIF);
+    transmitRecceiveErrorCountResister = getCITREC();
+    receiveErrorCount = transmitRecceiveErrorCountResister & 0xFF;
+    transmitErrorCount = (transmitRecceiveErrorCountResister >> 8) & 0xFF;
 
     //if(interruptFlags & 1)  //Transmit FIFO interrupt
     //{
@@ -1332,11 +1592,11 @@ void MCP2517FD::intHandler(void) {
       //handleTXFifoISR(0);
     //}
     //else //didn't get TX interrupt but check if we've got msgs in FIFO and see if we can queue them into hardware
-    {
-      if (uxQueueMessagesWaiting(txQueue) > 0) handleTXFifoISR(0); //if we have messages to send then try to queue them in the TX fifo
-    }
+    //{
+    //  if (uxQueueMessagesWaiting(txQueue) > 0) handleTXFifoISR(0); //if we have messages to send then try to queue them in the TX fifo
+    //}
 
-    if(interruptFlags & 2)  //Receive FIFO interrupt
+    if(intFlags.bF.RXIF)  //Receive FIFO interrupt
     {
         //no need to ask which FIFO matched, there is only one RX FIFO configured in this library
         //So, ask for frames out of the FIFO until it no longer has any
@@ -1357,26 +1617,34 @@ void MCP2517FD::intHandler(void) {
                 handleFrameDispatch(message, filtHit);
             }
         }
+    } else {
+        crc = Read(ADDR_CRC);
+        interruptCode  = Read(ADDR_CiVEC);
+        status = Read( ADDR_CiFIFOSTA );
+        intFlagLog[intFlagLogIndex] = status;
+        ciConLog[intFlagLogIndex] = Read(ADDR_CiCON);
+        intFlagLogIndex ++;
     }
-    if (interruptFlags & (1 << 11)) //Receive Object Overflow
+    if (intFlags.bF.RXOVIF) //Receive Object Overflow
     {
         //once again, we know which FIFO must have overflowed - what to do about it though?
         errorFlags |= 1;
     }
-    if (interruptFlags & (1 << 12)) //System error
+    if (intFlags.bF.SERRIF) //System error
     {
         errorFlags |= 2;
     }
-    if (interruptFlags & (1 << 13)) //CANBus error
+    if (intFlags.bF.CERRIF) //CANBus error
     {
         errorFlags |= 4;
     }
-    if (interruptFlags & (1 << 15)) //Invalid msg interrupt
+    if (intFlags.bF.IVMIF) //Invalid msg interrupt
     {
         errorFlags |= 8;
     }
     if (errorFlags > 0)
     {
+        //ESP_LOGE("MCP2517FD", "Error Flags: %d", errorFlags);
         //if (debuggingMode) Serial.write('?');
         uint32_t diagBits = getCIBDIAG1(); //get a detailed fault status
 
@@ -1420,7 +1688,7 @@ void MCP2517FD::intHandler(void) {
     }
 
     //Now, acknowledge the interrupts by clearing the intf bits
-    Write16(ADDR_CiINT, 0);
+    //Write16(ADDR_CiINT, 0);
 }
 
 //TX fifo is 0
@@ -1463,7 +1731,7 @@ void MCP2517FD::handleTXFifoISR(int fifo)
             //hardware loading below always uses the same buffer save whether CAN or CANFD
             if (!canToFD(frame, frameFD)) return;
         }
-        LoadFrameBuffer( addr + 0x400, frameFD );
+        WriteFrameBuffer( addr + 0x400, frameFD );
         wroteFrames = 1;
         status = Read(ADDR_CiFIFOSTA + (CiFIFO_OFFSET * fifo));
         //if (debuggingMode) Serial.printf("After write Status: %x\n", status);
@@ -1496,7 +1764,7 @@ void MCP2517FD::handleTXFifo(int fifo, CAN_FRAME_FD &newFrame)
     //if (status & 1) //FIFO has room for this message - immediately send it to hardware
     //{
     //  addr = Read( ADDR_CiFIFOUA + (CiFIFO_OFFSET * fifo) );
-    //  LoadFrameBuffer( addr + 0x400, newFrame );
+    //  WriteFrameBuffer( addr + 0x400, newFrame );
     //  Write8(ADDR_CiFIFOCON + (CiFIFO_OFFSET * fifo) + 1, 3); //Set UINC and TX_Request
     //}
     //else //no room on hardware. Locally buffer in software
@@ -1565,6 +1833,7 @@ void MCP2517FD::handleTXFifo(int fifo, CAN_FRAME &newFrame)
 */
 void MCP2517FD::handleFrameDispatch(CAN_FRAME_FD &frame, int filterHit)
 {
+    handle_dispatch_count++;
     CANListener *thisListener;
 
     //First, try to send a callback. If no callback registered then buffer the frame.
@@ -1580,34 +1849,40 @@ void MCP2517FD::handleFrameDispatch(CAN_FRAME_FD &frame, int filterHit)
         xQueueSend(callbackQueueMCP, &frame, 0);
         return;
     }
-    else
+    else if (enableListener)
     {
         for (int listenerPos = 0; listenerPos < SIZE_LISTENERS; listenerPos++)
         {
             thisListener = listener[listenerPos];
             if (thisListener != NULL)
             {
-                if (thisListener->isCallbackActive(filterHit))
-                {
-                    frame.fid = 0x80000000ul + (listenerPos << 24ul) + filterHit;
-                    xQueueSend(callbackQueueMCP, &frame, 0);
-                    return;
-                }
-                else if (thisListener->isCallbackActive(numFilters)) //global catch-all
-                {
-                    frame.fid = 0x80000000ul + (listenerPos << 24ul) + 0xFF;
-                    xQueueSend(callbackQueueMCP, &frame, 0);
-                    return;
-                }
+                thisListener->gotFrameFD(&frame, filterHit);
+                xQueueSend(rxQueue, &frame, 0);
+                rx_queue_count++;
+                return;
+                //if (thisListener->isCallbackActive(filterHit))
+                //{
+                //    frame.fid = 0x80000000ul + (listenerPos << 24ul) + filterHit;
+                //    xQueueSend(callbackQueueMCP, &frame, 0);
+                //    return;
+                //}
+                //else if (thisListener->isCallbackActive(numFilters)) //global catch-all
+                //{
+                //    frame.fid = 0x80000000ul + (listenerPos << 24ul) + 0xFF;
+                //    xQueueSend(callbackQueueMCP, &frame, 0);
+                //    return;
+                //}
             }
         }
     }
     //if none of the callback types caught this frame then queue it in the buffer
     xQueueSend(rxQueue, &frame, 0);
+    rx_queue_count++;
 }
 
 void MCP2517FD::handleFrameDispatch(CAN_FRAME &frame, int filterHit)
 {
+    handle_dispatch_count++;
     CANListener *thisListener;
 
     //First, try to send a callback. If no callback registered then buffer the frame.

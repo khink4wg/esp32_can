@@ -5,10 +5,16 @@
 #include "mcp2517fd_defines.h"
 #include <can_common.h>
 
+
+#include <vector>
+#include <utility>
+#include <cstdint>
+
 //#define DEBUG_SETUP
-#define FD_RX_BUFFER_SIZE	64
-#define FD_TX_BUFFER_SIZE  32
+#define FD_RX_BUFFER_SIZE 1024
+#define FD_TX_BUFFER_SIZE 1024
 #define FD_NUM_FILTERS 32
+#define INT_FLAG_LOG_SIZE 1000
 
 class MCP2517FD : public CAN_COMMON
 {
@@ -34,6 +40,7 @@ class MCP2517FD : public CAN_COMMON
 	bool sendFrame(CAN_FRAME& txFrame);
 	bool rx_avail();
 	uint16_t available(); //like rx_avail but returns the number of waiting frames
+	uint16_t waitingRxQueueCount();
 	uint32_t get_rx_buff(CAN_FRAME &msg);
 	//special FD functions required to reimplement to support FD mode
 	uint32_t get_rx_buffFD(CAN_FRAME_FD &msg);
@@ -48,10 +55,14 @@ class MCP2517FD : public CAN_COMMON
 	uint16_t Read16(uint16_t address);
     void Read(uint16_t address, uint8_t data[], uint16_t bytes);
 	void Write8(uint16_t address, uint8_t data);
+	void Write8WithoutTransaction(uint16_t address, uint8_t data);
 	void Write16(uint16_t address, uint16_t data);
 	void Write(uint16_t address, uint32_t data);
 	void Write(uint16_t address, uint8_t data[], uint16_t bytes);
-	void LoadFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
+	void WriteFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
+	void WriteFrame(CAN_FRAME_FD &message);
+	void WriteMultipleFrameBuffers(const std::vector<std::pair<uint16_t, CAN_FRAME_FD>> &messages);
+	void AppendFrameToBuffer(std::vector<uint8_t> &buffer, uint16_t address, const CAN_FRAME_FD &message);
 	uint32_t ReadFrameBuffer(uint16_t address, CAN_FRAME_FD &message);
 
 	uint8_t Status();
@@ -76,6 +87,7 @@ class MCP2517FD : public CAN_COMMON
 	void sendCallback(CAN_FRAME *frame);
 
 	void InitFilters(bool permissive);
+	void sendHandler();
 	void intHandler();
 	void printDebug();
 	void txQueueSetup();
@@ -84,11 +96,32 @@ class MCP2517FD : public CAN_COMMON
 
     QueueHandle_t callbackQueueMCP;
     TaskHandle_t intTaskFD = NULL;
+	TaskHandle_t taskHandleSendFD = NULL;
     TaskHandle_t taskHandleMCPCAN = NULL;
     TaskHandle_t taskHandleReset = NULL;
     bool needMCPReset = false;
     bool needTXFIFOReset = false;
     bool inFDMode;
+	uint32_t send_count = 0;
+	uint32_t rx_queue_count = 0;
+	uint32_t handle_dispatch_count = 0;
+	uint32_t int_handler_count = 0;
+	uint32_t task_MCPIntFD_count = 0;
+	uint32_t transmitErrorCount = 0;
+	uint32_t receiveErrorCount = 0;
+	uint32_t int_pin_count = 0;
+	uint32_t transmitRecceiveErrorCountResister;
+	uint32_t interruptCode;
+	uint32_t fifoStatus;
+	// intflag log 
+	uint32_t intFlagLog[INT_FLAG_LOG_SIZE];
+	uint16_t intFlagLogIndex = 0;
+	bool enableListener = true;
+	bool enableInterrupts = true;
+	uint32_t ci_int;
+	uint32_t receiveOverflowInterruptStatus;
+	uint32_t crc;
+	uint32_t ciConLog[INT_FLAG_LOG_SIZE];
 
   private:
 	bool _init(uint32_t baud, uint8_t freq, uint8_t sjw, bool autoBaud);
@@ -106,6 +139,8 @@ class MCP2517FD : public CAN_COMMON
 	uint32_t getErrorFlags();
 	uint32_t getCIBDIAG0();
 	uint32_t getCIBDIAG1();
+	uint32_t getCITREC();
+
 	uint32_t getBitConfig();
 
     // Pin variables
