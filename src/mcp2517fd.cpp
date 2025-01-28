@@ -5,7 +5,8 @@
 #include "mcp2517fd_regs.h"
 
 //20Mhz is the fastest we can go (because of the MCP2517/18 chip. The ESP32 or ESP32S3 can go much faster)
-#define FD_SPI_SPEED 17000000
+//#define FD_SPI_SPEED 17000000
+#define FD_SPI_SPEED 10000000
 
 SPISettings fdSPISettings(FD_SPI_SPEED, MSBFIRST, SPI_MODE0);
 
@@ -397,11 +398,11 @@ uint32_t MCP2517FD::initFD(uint32_t nominalRate, uint32_t dataRate)
 
     if(nominalRate > 0)
     {
-        if(_initFD(nominalRate, dataRate, 40, 4, false)) 
+        if(_initFD(nominalRate, dataRate, 20, 4, false)) 
         {
             savedNominalBaud = nominalRate;
             savedDataBaud = dataRate;
-            savedFreq = 40;
+            savedFreq = 20;
             running = 1;
             errorFlags = 0;
             rxFault = false;
@@ -414,7 +415,7 @@ uint32_t MCP2517FD::initFD(uint32_t nominalRate, uint32_t dataRate)
     {
 	    for(i = 20; i < 1000; i = i + 5)
         {
-	        if(_initFD(i, dataRate, 40, 4, true))
+	        if(_initFD(i, dataRate, 20, 4, true))
             {
                 // check for bus activity
 		        Write16(ADDR_CiINTENABLE,0); //write to INT flags to unset flags we can clear
@@ -429,7 +430,7 @@ uint32_t MCP2517FD::initFD(uint32_t nominalRate, uint32_t dataRate)
 		                Mode(CAN_NORMAL_MODE);
 			            savedNominalBaud = i;
                         savedDataBaud = dataRate;
-			            savedFreq = 40;
+			            savedFreq = 20;
 			            running = 1;
                         errorFlags = 0;
                         rxFault = false;
@@ -873,7 +874,7 @@ int MCP2517FD::_setFilterSpecific(uint8_t mailbox, uint32_t id, uint32_t mask, b
 
 uint32_t MCP2517FD::init(uint32_t ul_baudrate)
 {
-    return Init(ul_baudrate, 40);
+    return Init(ul_baudrate, 20);
 }
 
 uint32_t MCP2517FD::beginAutoSpeed()
