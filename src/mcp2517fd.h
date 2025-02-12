@@ -93,6 +93,7 @@ class MCP2517FD : public CAN_COMMON
 	void txQueueSetup();
     void setRXBufferSize(int newSize);
     void setTXBufferSize(int newSize);
+	CAN_FRAME_FD readSingleFrameFD();
 
     QueueHandle_t callbackQueueMCP;
     TaskHandle_t intTaskFD = NULL;
