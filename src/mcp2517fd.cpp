@@ -1563,6 +1563,28 @@ void MCP2517FD::sendHandler(void)
         handleTXFifoISR(0); // if we have messages to send then try to queue them in the TX fifo
 }
 
+CAN_FRAME_FD MCP2517FD::readSingleFrameFD()
+{
+    CAN_FRAME_FD messageFD;
+    uint32_t ctrlVal;
+    uint32_t status;
+    uint16_t addr;
+
+    status = Read(ADDR_CiFIFOSTA + (CiFIFO_OFFSET * 1));
+    if (!(status & 1))
+    {
+        return messageFD;
+    }
+
+    // Get address to read from
+    addr = Read(ADDR_CiFIFOUA + (CiFIFO_OFFSET * 1));
+    // Then use that address to read the frame
+    ReadFrameBuffer(addr + 0x400, messageFD);  // stupidly the returned address from FIFOUA needs an offset
+    Write8(ADDR_CiFIFOCON + (CiFIFO_OFFSET * 1) + 1, 1); 
+
+    return messageFD;
+}
+
 //Not truly an interrupt handler in the sense that it does NOT run in interrupt context
 //but it does handle the MCP2517FD interrupt still.
 void MCP2517FD::intHandler(void) {
