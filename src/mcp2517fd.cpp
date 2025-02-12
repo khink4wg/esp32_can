@@ -237,7 +237,7 @@ void MCP2517FD::initializeResources()
     pinMode(_CS, OUTPUT);
     digitalWrite(_CS,HIGH);
     pinMode(_INT,INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(_INT), MCPFD_INTHandler, FALLING);
+    //attachInterrupt(digitalPinToInterrupt(_INT), MCPFD_INTHandler, FALLING);
     //digitalWrite(_INT,HIGH);
 
     //attachInterrupt(_INT, MCPFD_INTHandler, FALLING);
@@ -264,7 +264,7 @@ void MCP2517FD::initializeResources()
     //Tasks take up the stack you allocate here in bytes plus 388 bytes overhead            
     //xTaskCreatePinnedToCore(&task_MCPCAN, "CAN_FD_CALLBACK", 6144, this, 8, &taskHandleMCPCAN, 0);
     //xTaskCreatePinnedToCore(&task_MCPSendFD, "CAN_FD_TX", 8192 , this, 10, &taskHandleSendFD, 0);
-    xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 8192 , this, 18, &intTaskFD, 1);
+    //xTaskCreatePinnedToCore(&task_MCPIntFD, "CAN_FD_INT", 8192 , this, 18, &intTaskFD, 1);
     xTaskCreatePinnedToCore(&task_ResetWatcher, "CAN_RSTWATCH", 4096, this, 1, &taskHandleReset, 1);
     if (debuggingMode) Serial.println("Done with resource init");
 
