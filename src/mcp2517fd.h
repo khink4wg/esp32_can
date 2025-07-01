@@ -14,7 +14,6 @@
 #define FD_RX_BUFFER_SIZE 1024
 #define FD_TX_BUFFER_SIZE 1024
 #define FD_NUM_FILTERS 32
-#define INT_FLAG_LOG_SIZE 1000
 
 class MCP2517FD : public CAN_COMMON
 {
@@ -112,17 +111,11 @@ class MCP2517FD : public CAN_COMMON
 	uint32_t receiveErrorCount = 0;
 	uint32_t int_pin_count = 0;
 	uint32_t transmitRecceiveErrorCountResister;
-	uint32_t interruptCode;
 	uint32_t fifoStatus;
-	// intflag log 
-	uint32_t intFlagLog[INT_FLAG_LOG_SIZE];
-	uint16_t intFlagLogIndex = 0;
 	bool enableListener = true;
 	bool enableInterrupts = true;
 	uint32_t ci_int;
 	uint32_t receiveOverflowInterruptStatus;
-	uint32_t crc;
-	uint32_t ciConLog[INT_FLAG_LOG_SIZE];
 
   private:
 	bool _init(uint32_t baud, uint8_t freq, uint8_t sjw, bool autoBaud);

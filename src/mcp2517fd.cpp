@@ -1640,13 +1640,6 @@ void MCP2517FD::intHandler(void) {
                 handleFrameDispatch(message, filtHit);
             }
         }
-    } else {
-        crc = Read(ADDR_CRC);
-        interruptCode  = Read(ADDR_CiVEC);
-        status = Read( ADDR_CiFIFOSTA );
-        intFlagLog[intFlagLogIndex] = status;
-        ciConLog[intFlagLogIndex] = Read(ADDR_CiCON);
-        intFlagLogIndex ++;
     }
     if (intFlags.bF.RXOVIF) //Receive Object Overflow
     {
